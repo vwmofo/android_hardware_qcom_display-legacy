@@ -1,6 +1,6 @@
 /*
 * Copyright (C) 2008 The Android Open Source Project
-* Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 #ifndef OVERLAY_MDP_H
 #define OVERLAY_MDP_H
 
-#include <linux/msm_mdp.h>
+#include "msm_mdp.h"
 
 #include "overlayUtils.h"
 #include "mdpWrapper.h"
@@ -132,11 +132,8 @@ public:
 
     bool setTransform(const utils::eTransform& orient, const bool& rotUsed);
 
-    const utils::eTransform& getTransform();
-
     /* given a dim and w/h, set overlay dim */
-    bool setPosition(const utils::Dim& dim, int w, int h,
-                     const overlay::utils::eTransform& e);
+    bool setPosition(const utils::Dim& dim, int w, int h);
 
     /* using user_data, sets/unsets roationvalue in mdp flags */
     void setRotationFlags();
@@ -144,10 +141,15 @@ public:
     /* dump state of the object */
     void dump() const;
 
+    /* Perform transformation calculations */
+    void doTransform();
+
+    /* Performs downscale calculations */
+    int doDownscale();
+
 private:
 
     /* helper functions for overlayTransform */
-    void doTransform();
     void overlayTransFlipH();
     void overlayTransFlipV();
     void overlayTransRot90();
@@ -236,6 +238,13 @@ private:
 };
 
 //--------------Inlines---------------------------------
+namespace utils {
+inline bool openDev(OvFD& fd, int fbnum,
+        const char* const devpath,
+        int flags) {
+    return overlay::open(fd, fbnum, devpath, flags);
+}
+}
 namespace {
 // just a helper func for common operations x-(y+z)
 int compute(uint32_t x, uint32_t y, uint32_t z) {

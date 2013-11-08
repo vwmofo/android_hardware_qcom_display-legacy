@@ -1,7 +1,6 @@
-
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -18,7 +17,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#define UEVENT_DEBUG 0
+#define DEBUG 0
 #include <hardware_legacy/uevent.h>
 #include <utils/Log.h>
 #include <sys/resource.h>
@@ -26,11 +25,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include "hwc_utils.h"
-#include "external.h"
+#include "hwc_external.h"
+
+#define PAGE_SIZE 4096
 
 namespace qhwc {
-
-#define HWC_UEVENT_THREAD_NAME "hwcUeventThread"
 
 static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
 {
@@ -38,41 +37,24 @@ static void handle_uevent(hwc_context_t* ctx, const char* udata, int len)
     int64_t timestamp = 0;
     const char *str = udata;
 
-    if(!strcasestr(str, "change@/devices/virtual/switch/hdmi") &&
-       !strcasestr(str, "change@/devices/virtual/switch/wfd")) {
-        ALOGD_IF(UEVENT_DEBUG, "%s: Not Ext Disp Event ", __FUNCTION__);
+    if(!strcasestr(str, "@/devices/virtual/graphics/fb")) {
+        ALOGD_IF(DEBUG, "%s: Not Ext Disp Event ", __FUNCTION__);
         return;
     }
 
-    int connected = -1; // initial value - will be set to  1/0 based on hotplug
-    // parse HDMI/WFD switch state for connect/disconnect
-    // for HDMI:
+    // parse HDMI events
     // The event will be of the form:
-    // change@/devices/virtual/switch/hdmi ACTION=change
-    // SWITCH_STATE=1 or SWITCH_STATE=0
-
-    while(*str) {
-        if (!strncmp(str, "SWITCH_STATE=", strlen("SWITCH_STATE="))) {
-            connected = atoi(str + strlen("SWITCH_STATE="));
-            //Disabled until SF calls unblank
-            ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].isActive = false;
-            break;
-        }
-        str += strlen(str) + 1;
-        if (str - udata >= len)
-            break;
-    }
-
-    if(connected != -1) { //either we got switch_state connected or disconnect
-        ctx->dpyAttr[HWC_DISPLAY_EXTERNAL].connected = connected;
-        if(connected) {
-            ctx->mExtDisplay->processUEventOnline(udata);
-        }else {
-            ctx->mExtDisplay->processUEventOffline(udata);
-        }
-        ALOGD("%s sending hotplug: connected = %d", __FUNCTION__, connected);
-        Locker::Autolock _l(ctx->mExtSetLock); //hwc comp could be on
-        ctx->proc->hotplug(ctx->proc, HWC_DISPLAY_EXTERNAL, connected);
+    // change@/devices/virtual/graphics/fb1 ACTION=change
+    // DEVPATH=/devices/virtual/graphics/fb1
+    // SUBSYSTEM=graphics HDCP_STATE=FAIL MAJOR=29
+    // for now just parsing onlin/offline info is enough
+    str = udata;
+    if(!(strncmp(str,"online@",strlen("online@")))) {
+        strncpy(ctx->mHDMIEvent,str,strlen(str));
+        ctx->hdmi_pending = true;
+    } else if(!(strncmp(str,"offline@",strlen("offline@")))) {
+        ctx->hdmi_pending = false;
+        ctx->mExtDisplay->processUEventOffline(str);
     }
 }
 
@@ -81,7 +63,8 @@ static void *uevent_loop(void *param)
     int len = 0;
     static char udata[PAGE_SIZE];
     hwc_context_t * ctx = reinterpret_cast<hwc_context_t *>(param);
-    char thread_name[64] = HWC_UEVENT_THREAD_NAME;
+
+    char thread_name[64] = "hwcUeventThread";
     prctl(PR_SET_NAME, (unsigned long) &thread_name, 0, 0, 0);
     setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
     uevent_init();
@@ -97,14 +80,8 @@ static void *uevent_loop(void *param)
 void init_uevent_thread(hwc_context_t* ctx)
 {
     pthread_t uevent_thread;
-    int ret;
-
-    ALOGI("Initializing UEVENT Thread");
-    ret = pthread_create(&uevent_thread, NULL, uevent_loop, (void*) ctx);
-    if (ret) {
-        ALOGE("%s: failed to create %s: %s", __FUNCTION__,
-            HWC_UEVENT_THREAD_NAME, strerror(ret));
-    }
+    ALOGI("Initializing UEvent Listener Thread");
+    pthread_create(&uevent_thread, NULL, uevent_loop, (void*) ctx);
 }
 
 }; //namespace

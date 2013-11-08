@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Gralloc module
+#gralloc module
 LOCAL_PATH := $(call my-dir)
 include $(LOCAL_PATH)/../common.mk
 include $(CLEAR_VARS)
@@ -23,30 +23,25 @@ LOCAL_MODULE_TAGS             := optional
 LOCAL_C_INCLUDES              := $(common_includes) $(kernel_includes)
 LOCAL_SHARED_LIBRARIES        := $(common_libs) libmemalloc libgenlock
 LOCAL_SHARED_LIBRARIES        += libqdutils libGLESv1_CM
-LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"qdgralloc\"
+LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"gralloc\"
 LOCAL_ADDITIONAL_DEPENDENCIES := $(common_deps) $(kernel_deps)
-LOCAL_SRC_FILES               := gpu.cpp gralloc.cpp framebuffer.cpp mapper.cpp
-LOCAL_COPY_HEADERS_TO         := $(common_header_export_path)
-LOCAL_COPY_HEADERS            := gralloc_priv.h
-
+LOCAL_SRC_FILES               :=  gpu.cpp gralloc.cpp framebuffer.cpp mapper.cpp
 include $(BUILD_SHARED_LIBRARY)
 
-# MemAlloc Library
+#MemAlloc Library
 include $(CLEAR_VARS)
-
-LOCAL_MODULE                  := libmemalloc
-LOCAL_MODULE_TAGS             := optional
-LOCAL_C_INCLUDES              := $(common_includes) $(kernel_includes)
-LOCAL_SHARED_LIBRARIES        := $(common_libs) libgenlock
-LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"qdmemalloc\"
+LOCAL_MODULE           := libmemalloc
+LOCAL_MODULE_TAGS      := optional
+LOCAL_C_INCLUDES       := $(common_includes) $(kernel_includes)
+LOCAL_SHARED_LIBRARIES := $(common_libs) libgenlock libqdutils
+LOCAL_CFLAGS           := $(common_flags) -DLOG_TAG=\"memalloc\"
 LOCAL_ADDITIONAL_DEPENDENCIES := $(common_deps) $(kernel_deps)
-LOCAL_SRC_FILES               := alloc_controller.cpp
+LOCAL_SRC_FILES        := alloc_controller.cpp
 ifeq ($(TARGET_USES_ION),true)
     LOCAL_SRC_FILES += ionalloc.cpp
 else
     LOCAL_SRC_FILES += ashmemalloc.cpp \
-                    pmemalloc.cpp \
-                    pmem_bestfit_alloc.cpp
+                       pmemalloc.cpp \
+                       pmem_bestfit_alloc.cpp
 endif
-
 include $(BUILD_SHARED_LIBRARY)

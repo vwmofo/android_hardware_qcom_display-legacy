@@ -1,9 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010 - 2013, The Linux Foundation. All rights reserved.
- *
- * Not a Contribution, Apache license notifications and license are retained
- * for attribution purposes only.
+ * Copyright (c) 2010 - 2011, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +14,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+
+#define LOG_TAG "copybit"
 
 #include <cutils/log.h>
 
@@ -317,10 +317,10 @@ static int set_parameter_copybit(
                     ctx->mFlags &= ~MDP_BLUR;
                 }
                 break;
-            case COPYBIT_BLEND_MODE:
-                if(value == COPYBIT_BLENDING_PREMULT) {
+            case COPYBIT_PREMULTIPLIED_ALPHA:
+                if(value == COPYBIT_ENABLE) {
                     ctx->mFlags |= MDP_BLEND_FG_PREMULT;
-                } else {
+                } else if (value == COPYBIT_DISABLE) {
                     ctx->mFlags &= ~MDP_BLEND_FG_PREMULT;
                 }
                 break;
@@ -428,7 +428,7 @@ static int stretch_copybit(
 
         if(src->format ==  HAL_PIXEL_FORMAT_YV12) {
             int usage = GRALLOC_USAGE_PRIVATE_ADSP_HEAP |
-            GRALLOC_USAGE_PRIVATE_CAMERA_HEAP | GRALLOC_USAGE_PRIVATE_UNCACHED;
+                GRALLOC_USAGE_PRIVATE_MM_HEAP;
             if (0 == alloc_buffer(&yv12_handle,src->w,src->h,
                                   src->format, usage)){
                 if(0 == convertYV12toYCrCb420SP(src,yv12_handle)){
@@ -506,12 +506,6 @@ static int blit_copybit(
     return stretch_copybit(dev, dst, src, &dr, &sr, region);
 }
 
-static int finish_copybit(struct copybit_device_t *dev)
-{
-    // NOP for MDP copybit
-    return 0;
-}
-
 /*****************************************************************************/
 
 /** Close the copybit device */
@@ -542,7 +536,6 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
     ctx->device.get = get;
     ctx->device.blit = blit_copybit;
     ctx->device.stretch = stretch_copybit;
-    ctx->device.finish = finish_copybit;
     ctx->mAlpha = MDP_ALPHA_NOP;
     ctx->mFlags = 0;
     ctx->mFD = open("/dev/graphics/fb0", O_RDWR, 0);

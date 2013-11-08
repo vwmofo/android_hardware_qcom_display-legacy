@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -28,58 +28,79 @@ struct hwc_context_t;
 
 namespace qhwc {
 
+#define DEVICE_ROOT "/sys/devices/virtual/graphics"
+#define DEVICE_NODE_FB1                 "fb1"
+#define DEVICE_NODE_FB2                 "fb2"
+#define HDMI_PANEL                      "dtv panel"
+#define WFD_PANEL                       "writeback panel"
+#define EXTERN_DISPLAY_NONE             0
+#define EXTERN_DISPLAY_FB1              1
+#define EXTERN_DISPLAY_FB2              2
+#define MAX_FRAME_BUFFER_NAME_SIZE      80
+#define MAX_DISPLAY_EXTERNAL_DEVICES    2
+#define HPD_ENABLE                      1
+#define HPD_DISABLE                     0
+#define DEVICE_ONLINE                   true
+#define DEVICE_OFFLINE                  false
+
+
+#define SYSFS_EDID_MODES        DEVICE_ROOT "/" DEVICE_NODE_FB1 "/edid_modes"
+#define SYSFS_HPD               DEVICE_ROOT "/" DEVICE_NODE_FB1 "/hpd"
 
 class ExternalDisplay
 {
-public:
+    //Type of external display -  OFF, HDMI, WFD
+    enum external_display_type {
+        EXT_TYPE_NONE,
+        EXT_TYPE_HDMI,
+        EXT_TYPE_WIFI
+    };
+
+    // Mirroring state
+    enum external_mirroring_state {
+        EXT_MIRRORING_OFF,
+        EXT_MIRRORING_ON,
+    };
+    public:
     ExternalDisplay(hwc_context_t* ctx);
     ~ExternalDisplay();
     int getModeCount() const;
     void getEDIDModes(int *out) const;
-    void setExternalDisplay(bool connected, int extFbNum = 0);
-    bool isExternalConnected() { return mConnected;};
-    bool post();
-    void setHPD(uint32_t startEnd);
+    int getExternalDisplay() const;
+    void setExternalDisplay(int connected);
+    bool commit();
+    int enableHDMIVsync(int enable);
+    void setHPDStatus(int enabled);
     void setEDIDMode(int resMode);
     void setActionSafeDimension(int w, int h);
     void processUEventOnline(const char *str);
     void processUEventOffline(const char *str);
+    bool isHDMIConfigured();
 
-private:
+    private:
     bool readResolution();
-    int  parseResolution(char* edidStr, int* edidModes);
+    int parseResolution(char* edidStr, int* edidModes);
     void setResolution(int ID);
     bool openFrameBuffer(int fbNum);
     bool closeFrameBuffer();
     bool writeHPDOption(int userOption) const;
     bool isValidMode(int ID);
     void handleUEvent(char* str, int len);
-    int  getModeOrder(int mode);
-    int  getBestMode();
+    int getModeOrder(int mode);
+    int getBestMode();
     void resetInfo();
-    void setDpyHdmiAttr();
-    void setDpyWfdAttr();
-    void getAttrForMode(int& width, int& height, int& fps);
-    void updateExtDispDevFbIndex();
-    int  configureHDMIDisplay();
-    int  configureWFDDisplay();
-    int  teardownHDMIDisplay();
-    int  teardownWFDDisplay();
-    int  getExtFbNum(int &fbNum);
+    void configureWFDDisplay(int fbIndex);
 
     mutable android::Mutex mExtDispLock;
     int mFd;
     int mCurrentMode;
-    int mConnected;
-    int mConnectedFbNum;
+    int mExternalDisplay;
     int mResolutionMode;
     char mEDIDs[128];
     int mEDIDModes[64];
     int mModeCount;
     hwc_context_t *mHwcContext;
     fb_var_screeninfo mVInfo;
-    int mHdmiFbNum;
-    int mWfdFbNum;
 };
 
 }; //qhwc

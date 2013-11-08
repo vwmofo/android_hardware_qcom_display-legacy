@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
 *      copyright notice, this list of conditions and the following
 *      disclaimer in the documentation and/or other materials provided
 *      with the distribution.
-*    * Neither the name of The Linux Foundation nor the names of its
+*    * Neither the name of Code Aurora Forum, Inc. nor the names of its
 *      contributors may be used to endorse or promote products derived
 *      from this software without specific prior written permission.
 *
@@ -35,7 +35,7 @@
 #include <fcntl.h> // open, O_RDWR, etc
 #include <hardware/hardware.h>
 #include <hardware/gralloc.h> // buffer_handle_t
-#include <linux/msm_mdp.h> // flags
+#include "msm_mdp.h" // flags
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +44,6 @@
 #include <utils/Log.h>
 #include <mdp_version.h>
 #include "gralloc_priv.h" //for interlace
-
 /*
 *
 * Collection of utilities functions/structs/enums etc...
@@ -68,11 +67,6 @@ namespace overlay {
 
 // fwd
 class Overlay;
-class OvFD;
-
-/* helper function to open by using fbnum */
-bool open(OvFD& fd, uint32_t fbnum, const char* const dev,
-    int flags = O_RDWR);
 
 namespace utils {
 struct Whf;
@@ -124,6 +118,9 @@ public:
 
     /* Gets height of primary framebuffer */
     int getHeight() const;
+
+    /* Indicates whether true mirroring is supported */
+    bool supportTrueMirroring() const;
 
 private:
     int mFBWidth;
@@ -265,12 +262,32 @@ enum { MAX_PATH_LEN = 256 };
  * Rotator flags: not to be confused with orientation flags.
  * Ususally, you want to open the rotator to make sure it is
  * ready for business.
- * ROT_FLAG_DISABLED: Rotator not used unless required.
- * ROT_FLAG_ENABLED: Rotator used even if not required.
+ * ROT_FLAG_DISABLED: Rotator would not kick in. (ioctl will emit errors).
+ * ROT_FLAG_ENABLED: and when rotation is needed.
+ *                   (prim video playback)
+ *                   (UI mirroring on HDMI w/ 0 degree rotator. - just memcpy)
+ * In HDMI UI mirroring, rotator is always used.
+ * Even when w/o orienation change on primary,
+ * we do 0 rotation on HDMI and using rotator buffers.
+ * That is because we might see tearing otherwise. so
+ * we use another buffer (rotator).
+ * When a simple video playback on HDMI, no rotator is being used.(null r).
  * */
 enum eRotFlags {
-    ROT_FLAG_DISABLED = 0,
-    ROT_FLAG_ENABLED = 1 // needed in rot
+    ROT_FLAGS_NONE = 0,
+    //Use rotator for 0 rotation. It is used anyway for others.
+    ROT_0_ENABLED = 1 << 0,
+    //Enable rotator downscale optimization for hardware bugs not handled in
+    //driver. If downscale optimizatation is required,
+    //then rotator will be used even if its 0 rotation case.
+    ROT_DOWNSCALE_ENABLED = 1 << 1,
+};
+
+enum eRotDownscale {
+    ROT_DS_NONE = 0,
+    ROT_DS_HALF = 1,
+    ROT_DS_FOURTH = 2,
+    ROT_DS_EIGHTH = 3,
 };
 
 /* The values for is_fg flag for control alpha and transp
@@ -296,40 +313,33 @@ enum eMdpFlags {
     OV_MDP_MEMORY_ID_TYPE_FB = MDP_MEMORY_ID_TYPE_FB,
     OV_MDP_BACKEND_COMPOSITION = MDP_BACKEND_COMPOSITION,
     OV_MDP_BLEND_FG_PREMULT = MDP_BLEND_FG_PREMULT,
-    OV_MDP_FLIP_H = MDP_FLIP_LR,
-    OV_MDP_FLIP_V = MDP_FLIP_UD,
+    OV_MDP_180_FLIP = MDP_FLIP_UD|MDP_FLIP_LR,
 };
 
 enum eZorder {
     ZORDER_0,
     ZORDER_1,
     ZORDER_2,
-    ZORDER_3,
     Z_SYSTEM_ALLOC = 0xFFFF
 };
 
 enum eMdpPipeType {
     OV_MDP_PIPE_RGB,
-    OV_MDP_PIPE_VG,
-    OV_MDP_PIPE_ANY, //Any
+    OV_MDP_PIPE_VG
 };
 
-/* Used to identify destination pipes
- */
+// Max pipes via overlay (VG0, VG1, RGB1)
+enum { MAX_PIPES = 3 };
+
+/* Used to identify destination channels and
+ * also 3D channels e.g. when in 3D mode with 2
+ * pipes opened and it is used in get crop/pos 3D
+ * */
 enum eDest {
-    OV_VG0 = 0,
-    OV_RGB0,
-    OV_VG1,
-    OV_RGB1,
-    OV_VG2,
-    OV_RGB2,
-    OV_INVALID,
-};
-
-/* Used when a buffer is split over 2 pipes and sent to display */
-enum {
-    OV_LEFT_SPLIT = 0,
-    OV_RIGHT_SPLIT,
+    OV_PIPE0 = 1 << 0,
+    OV_PIPE1 = 1 << 1,
+    OV_PIPE2 = 1 << 2,
+    OV_PIPE_ALL  = (OV_PIPE0 | OV_PIPE1 | OV_PIPE2)
 };
 
 /* values for copybit_set_parameter(OVERLAY_TRANSFORM) */
@@ -363,7 +373,7 @@ struct PipeArgs {
     PipeArgs() : mdpFlags(OV_MDP_FLAGS_NONE),
         zorder(Z_SYSTEM_ALLOC),
         isFg(IS_FG_OFF),
-        rotFlags(ROT_FLAG_DISABLED){
+        rotFlags(ROT_FLAGS_NONE){
     }
 
     PipeArgs(eMdpFlags f, Whf _whf,
@@ -382,6 +392,39 @@ struct PipeArgs {
     eRotFlags rotFlags;
 };
 
+enum eOverlayState{
+    /* No pipes from overlay open */
+    OV_CLOSED = 0,
+
+    /* 2D Video */
+    OV_2D_VIDEO_ON_PANEL,
+    OV_2D_VIDEO_ON_PANEL_TV,
+    OV_2D_VIDEO_ON_TV,
+
+    /* 3D Video on one display (panel or TV) */
+    OV_3D_VIDEO_ON_2D_PANEL,
+    OV_3D_VIDEO_ON_3D_PANEL,
+    OV_3D_VIDEO_ON_3D_TV,
+
+    /* 3D Video on two displays (panel and TV) */
+    OV_3D_VIDEO_ON_2D_PANEL_2D_TV,
+
+    /* PIP, two videos on TV or primary panel */
+    OV_2D_PIP_VIDEO_ON_PANEL,
+
+    /* UI Mirroring */
+    OV_UI_MIRROR,
+    OV_2D_TRUE_UI_MIRROR,
+
+    /* Composition Bypass */
+    OV_BYPASS_1_LAYER,
+    OV_BYPASS_2_LAYER,
+    OV_BYPASS_3_LAYER,
+
+    /* External only for dual-disp */
+    OV_DUAL_DISP,
+};
+
 inline void setMdpFlags(eMdpFlags& f, eMdpFlags v) {
     f = static_cast<eMdpFlags>(setBit(f, v));
 }
@@ -395,6 +438,44 @@ enum { FB0, FB1, FB2 };
 
 //Panels could be categorized as primary and external
 enum { PRIMARY, EXTERNAL };
+
+//External Panels could use HDMI or WFD
+enum {
+    HDMI = 1,
+    WFD = 2
+};
+
+//TODO Make this a part of some appropriate class
+static int sExtType = HDMI; //HDMI or WFD
+//Set by client as HDMI/WFD
+void setExtType(const int& type);
+//Return External panel type set by client.
+int getExtType();
+
+
+//Gets the FB number for the external type.
+//As of now, HDMI always has fb1, WFD could use fb1 or fb2
+//Assumes Ext type set by setExtType() from client.
+static int getFBForPanel(int panel) { // PRIMARY OR EXTERNAL
+    switch(panel) {
+        case PRIMARY: return FB0;
+            break;
+        case EXTERNAL:
+            switch(getExtType()) {
+                case HDMI: return FB1;
+                    break;
+                case WFD: return FB2;//Hardcoding fb2 for wfd. Will change.
+                    break;
+            }
+            break;
+        default:
+            ALOGE("%s: Unrecognized PANEL category %d", __func__, panel);
+            break;
+    }
+    return -1;
+}
+
+// number of rgb pipes bufs (max)
 
 // 2 for rgb0/1 double bufs
 enum { RGB_PIPE_NUM_BUFS = 2 };
@@ -419,6 +500,7 @@ int getRotOutFmt(uint32_t format);
 int getMdpOrient(eTransform rotation);
 int getOverlayMagnificationLimit();
 const char* getFormatString(int format);
+const char* getStateString(eOverlayState state);
 
 enum {
     HW_OV_MINIFICATION_LIMIT  = 8
@@ -481,18 +563,12 @@ inline bool isYuv(uint32_t format) {
         case MDP_Y_CBCR_H2V1:
         case MDP_Y_CBCR_H2V2:
         case MDP_Y_CRCB_H2V2:
-#ifndef QCOM_MISSING_PIXEL_FORMATS
         case MDP_Y_CRCB_H1V1:
-#endif
         case MDP_Y_CRCB_H2V1:
-#ifndef QCOM_MISSING_PIXEL_FORMATS
         case MDP_Y_CRCB_H2V2_TILE:
         case MDP_Y_CBCR_H2V2_TILE:
-#endif
         case MDP_Y_CR_CB_H2V2:
-#ifndef QCOM_MISSING_PIXEL_FORMATS
         case MDP_Y_CR_CB_GH2V2:
-#endif
             return true;
         default:
             return false;
@@ -509,6 +585,16 @@ inline bool isRgb(uint32_t format) {
             return true;
         default:
             return false;
+    }
+    return false;
+}
+
+inline bool isValidDest(eDest dest)
+{
+    if ((OV_PIPE0 & dest) ||
+            (OV_PIPE1 & dest) ||
+            (OV_PIPE2 & dest)) {
+        return true;
     }
     return false;
 }
@@ -552,6 +638,44 @@ inline const char* getFormatString(int format){
     return formats[format];
 }
 
+inline const char* getStateString(eOverlayState state){
+    switch (state) {
+        case OV_CLOSED:
+            return "OV_CLOSED";
+        case OV_2D_VIDEO_ON_PANEL:
+            return "OV_2D_VIDEO_ON_PANEL";
+        case OV_2D_VIDEO_ON_PANEL_TV:
+            return "OV_2D_VIDEO_ON_PANEL_TV";
+        case OV_2D_VIDEO_ON_TV:
+            return "OV_2D_VIDEO_ON_TV";
+        case OV_3D_VIDEO_ON_2D_PANEL:
+            return "OV_3D_VIDEO_ON_2D_PANEL";
+        case OV_3D_VIDEO_ON_3D_PANEL:
+            return "OV_3D_VIDEO_ON_3D_PANEL";
+        case OV_3D_VIDEO_ON_3D_TV:
+            return "OV_3D_VIDEO_ON_3D_TV";
+        case OV_3D_VIDEO_ON_2D_PANEL_2D_TV:
+            return "OV_3D_VIDEO_ON_2D_PANEL_2D_TV";
+        case OV_2D_PIP_VIDEO_ON_PANEL:
+            return "OV_2D_PIP_VIDEO_ON_PANEL";
+        case OV_UI_MIRROR:
+            return "OV_UI_MIRROR";
+        case OV_2D_TRUE_UI_MIRROR:
+            return "OV_2D_TRUE_UI_MIRROR";
+        case OV_BYPASS_1_LAYER:
+            return "OV_BYPASS_1_LAYER";
+        case OV_BYPASS_2_LAYER:
+            return "OV_BYPASS_2_LAYER";
+        case OV_BYPASS_3_LAYER:
+            return "OV_BYPASS_3_LAYER";
+        case OV_DUAL_DISP:
+            return "OV_DUAL_DISP";
+        default:
+            return "UNKNOWN_STATE";
+    }
+    return "BAD_STATE";
+}
+
 inline void Whf::dump() const {
     ALOGE("== Dump WHF w=%d h=%d f=%d s=%d start/end ==",
             w, h, format, size);
@@ -561,20 +685,39 @@ inline void Dim::dump() const {
     ALOGE("== Dump Dim x=%d y=%d w=%d h=%d start/end ==", x, y, w, h);
 }
 
+inline int getMdpOrient(eTransform rotation) {
+    ALOGE_IF(DEBUG_OVERLAY, "%s: rot=%d", __FUNCTION__, rotation);
+    switch(rotation)
+    {
+        case OVERLAY_TRANSFORM_0 : return 0;
+        case OVERLAY_TRANSFORM_FLIP_V:  return MDP_FLIP_UD;
+        case OVERLAY_TRANSFORM_FLIP_H:  return MDP_FLIP_LR;
+        case OVERLAY_TRANSFORM_ROT_90:  return MDP_ROT_90;
+        //getMdpOrient will switch the flips if the source is 90 rotated.
+        //Clients in Android dont factor in 90 rotation while deciding flip.
+        case OVERLAY_TRANSFORM_ROT_90_FLIP_V:
+                return MDP_ROT_90 | MDP_FLIP_LR;
+        case OVERLAY_TRANSFORM_ROT_90_FLIP_H:
+                return MDP_ROT_90 | MDP_FLIP_UD;
+        case OVERLAY_TRANSFORM_ROT_180: return MDP_ROT_180;
+        case OVERLAY_TRANSFORM_ROT_270: return MDP_ROT_270;
+        default:
+            ALOGE("%s: invalid rotation value (value = 0x%x",
+                    __FUNCTION__, rotation);
+    }
+    return -1;
+}
+
 inline int getRotOutFmt(uint32_t format) {
     switch (format) {
-#ifndef QCOM_MISSING_PIXEL_FORMATS
         case MDP_Y_CRCB_H2V2_TILE:
             return MDP_Y_CRCB_H2V2;
         case MDP_Y_CBCR_H2V2_TILE:
             return MDP_Y_CBCR_H2V2;
-#endif
         case MDP_Y_CB_CR_H2V2:
             return MDP_Y_CBCR_H2V2;
-#ifndef QCOM_MISSING_PIXEL_FORMATS
         case MDP_Y_CR_CB_GH2V2:
             return MDP_Y_CRCB_H2V2;
-#endif
         default:
             return format;
     }
@@ -615,7 +758,7 @@ inline Dim getPositionS3DImpl(const Whf& whf)
 }
 
 template <>
-inline Dim getPositionS3DImpl<utils::OV_RIGHT_SPLIT>(const Whf& whf)
+inline Dim getPositionS3DImpl<utils::OV_PIPE1>(const Whf& whf)
 {
     switch (whf.format & OUTPUT_3D_MASK)
     {
@@ -663,7 +806,7 @@ inline Dim getCropS3DImpl(const Dim& in, uint32_t fmt) {
 }
 
 template <>
-inline Dim getCropS3DImpl<utils::OV_RIGHT_SPLIT>(const Dim& in, uint32_t fmt) {
+inline Dim getCropS3DImpl<utils::OV_PIPE1>(const Dim& in, uint32_t fmt) {
     switch (fmt & INPUT_3D_MASK)
     {
         case HAL_3D_IN_SIDE_BY_SIDE_L_R:
@@ -702,11 +845,6 @@ inline void ScreenInfo::dump(const char* const s) const {
             s, mFBWidth, mFBHeight, mFBbpp, mFBystride);
 }
 
-inline bool openDev(OvFD& fd, int fbnum,
-    const char* const devpath, int flags) {
-    return overlay::open(fd, fbnum, devpath, flags);
-}
-
 template <class T>
 inline void even_ceil(T& value) {
     if(value & 1)
@@ -717,35 +855,6 @@ template <class T>
 inline void even_floor(T& value) {
     if(value & 1)
         value--;
-}
-
-inline const char* getDestStr(eDest dest) {
-    switch(dest) {
-        case OV_VG0: return "VG0";
-        case OV_RGB0: return "RGB0";
-        case OV_VG1: return "VG1";
-        case OV_RGB1: return "RGB1";
-        case OV_VG2: return "VG2";
-        case OV_RGB2: return "RGB2";
-        default: return "Invalid";
-    }
-    return "Invalid";
-}
-
-inline eMdpPipeType getPipeType(eDest dest) {
-    switch(dest) {
-        case OV_VG0:
-        case OV_VG1:
-        case OV_VG2:
-            return OV_MDP_PIPE_VG;
-        case OV_RGB0:
-        case OV_RGB1:
-        case OV_RGB2:
-            return OV_MDP_PIPE_RGB;
-        default:
-            return OV_MDP_PIPE_ANY;
-    }
-    return OV_MDP_PIPE_ANY;
 }
 
 } // namespace utils ends
@@ -769,6 +878,12 @@ public:
 
 //--------------------Class OvFD stuff (namespace overlay only) -----------
 
+class OvFD;
+
+/* helper function to open by using fbnum */
+bool open(OvFD& fd, uint32_t fbnum, const char* const dev,
+    int flags = O_RDWR);
+
 /*
 * Holds one FD
 * Dtor will NOT close the underlying FD.
@@ -790,6 +905,11 @@ public:
     /* populate path */
     void setPath(const char* const dev);
 
+    /* retrieve path */
+    const char* getPath() {
+        return (const char*) mPath;
+    };
+
     /* Close fd if we have a valid fd. */
     bool close();
 
@@ -804,6 +924,7 @@ public:
 
     /* dump the state of the instance */
     void dump() const;
+
 private:
     /* helper enum for determine valid/invalid fd */
     enum { INVAL = -1 };

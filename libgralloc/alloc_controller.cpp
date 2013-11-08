@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
  *     copyright notice, this list of conditions and the following
  *     disclaimer in the documentation and/or other materials provided
  *     with the distribution.
- *   * Neither the name of The Linux Foundation nor the names of its
+ *   * Neither the name of Code Aurora Forum, Inc. nor the names of its
  *     contributors may be used to endorse or promote products derived
  *     from this software without specific prior written permission.
  *
@@ -39,13 +39,7 @@
 #include "gr.h"
 #include "comptype.h"
 
-#ifdef VENUS_COLOR_FORMAT
-#include <media/msm_media_info.h>
-#else
-#define VENUS_Y_STRIDE(args...) 0
-#define VENUS_Y_SCANLINES(args...) 0
-#define VENUS_BUFFER_SIZE(args...) 0
-#endif
+ANDROID_SINGLETON_STATIC_INSTANCE(qdutils::QCCompositionType);
 
 using namespace gralloc;
 using namespace qdutils;
@@ -168,19 +162,7 @@ int IonController::allocate(alloc_data& data, int usage,
     data.flags = ionFlags;
     ret = mIonAlloc->alloc_buffer(data);
 
-    // Fallback to CAMERA PREVIEW heap if
-    // allocation is for fb1 AND
-    // allocation from SF heap fails
-    // Reason : fb1 had to go to MDP and MDP can't use system heap
-    // TODO : don't hardcode based on 'usage'
-
-    if(ret < 0 && (usage == 6659)) {
-       ALOGW("Falling back to CAMERA_PREVIEW heap for fb allocations");
-       data.flags = ION_HEAP(ION_CAMERA_HEAP_ID);
-       ret = mIonAlloc->alloc_buffer(data);
-    }
-
-    // Fallback to system heap
+    // Fallback
     if(ret < 0 && canFallback(usage,
                               (ionFlags & ION_SYSTEM_HEAP_ID)))
     {
@@ -376,8 +358,8 @@ size_t getBufferSizeAndDimensions(int width, int height, int format,
             size = alignedw * alignedh * 3;
             break;
         case HAL_PIXEL_FORMAT_RGB_565:
-        case HAL_PIXEL_FORMAT_RGBA_5551:
-        case HAL_PIXEL_FORMAT_RGBA_4444:
+        //case HAL_PIXEL_FORMAT_RGBA_5551:
+        //case HAL_PIXEL_FORMAT_RGBA_4444:
             size = alignedw * alignedh * 2;
             break;
 

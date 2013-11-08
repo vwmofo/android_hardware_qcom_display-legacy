@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -17,8 +17,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef HWC_FBUPDATE_H
-#define HWC_FBUPDATE_H
+#ifndef HWC_UIMIRROR_H
+#define HWC_UIMIRROR_H
 #include "hwc_utils.h"
 #include "overlay.h"
 
@@ -26,26 +26,22 @@
 #define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
 
 namespace qhwc {
-namespace ovutils = overlay::utils;
-
-//Framebuffer update
-class FBUpdate {
+//Feature for Mirroring UI on the External display
+class UIMirrorOverlay {
     public:
         // Sets up members and prepares overlay if conditions are met
-        static bool prepare(hwc_context_t *ctx, hwc_layer_1_t *fblayer, int dpy);
+        static bool prepare(hwc_context_t *ctx, hwc_display_contents_1_t *list);
         // Draws layer if this feature is on
-        static bool draw(hwc_context_t *ctx, hwc_layer_1_t *fblayer, int dpy);
-        //Reset values
-        static void reset();
+        static bool draw(hwc_context_t *ctx);
     private:
         //Configures overlay
-        static bool configure(hwc_context_t *ctx, hwc_layer_1_t *fblayer,
-            int dpy);
+        static bool configure(hwc_context_t *ctx, hwc_display_contents_1_t *list);
+        //The chosen overlay state.
+        static ovutils::eOverlayState sState;
         //Flags if this feature is on.
-        static bool sModeOn[HWC_NUM_DISPLAY_TYPES];
-        static ovutils::eDest sDest[HWC_NUM_DISPLAY_TYPES];
+        static bool sIsUiMirroringOn;
 };
 
 }; //namespace qhwc
 
-#endif //HWC_FBUPDATE_H
+#endif //HWC_UIMIRROR_H

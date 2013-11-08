@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2010-2012 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2012 Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@
 #include <cutils/atomic.h>
 
 #include <linux/fb.h>
-#include <linux/msm_mdp.h>
+#include <msm_mdp.h>
 
 #include <GLES/gl.h>
 
@@ -42,6 +42,15 @@
 #include <genlock.h>
 #include <cutils/properties.h>
 #include <profiler.h>
+
+#ifndef NO_HW_VSYNC
+#ifndef MSMFB_IOCTL_MAGIC
+#define MSMFB_IOCTL_MAGIC 'm'
+#endif
+#ifndef MSMFB_OVERLAY_VSYNC_CTRL
+#define MSMFB_OVERLAY_VSYNC_CTRL _IOW(MSMFB_IOCTL_MAGIC, 160, unsigned int)
+#endif
+#endif
 
 #define EVEN_OUT(x) if (x & 0x0001) {x--;}
 /** min of int a, b */
@@ -84,32 +93,76 @@ static int fb_setSwapInterval(struct framebuffer_device_t* dev,
     return 0;
 }
 
+static int fb_setUpdateRect(struct framebuffer_device_t* dev,
+                            int l, int t, int w, int h)
+{
+    if (((w|h) <= 0) || ((l|t)<0))
+        return -EINVAL;
+    fb_context_t* ctx = (fb_context_t*)dev;
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+        dev->common.module);
+    m->info.reserved[0] = 0x54445055; // "UPDT";
+    m->info.reserved[1] = (uint16_t)l | ((uint32_t)t << 16);
+    m->info.reserved[2] = (uint16_t)(l+w) | ((uint32_t)(t+h) << 16);
+    return 0;
+}
+
 static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 {
+#ifndef NO_HW_VSYNC
+    int e = 1;
+#endif
+    if (private_handle_t::validate(buffer) < 0)
+        return -EINVAL;
 
     fb_context_t* ctx = (fb_context_t*) dev;
 
     private_handle_t *hnd = static_cast<private_handle_t*>
-            (const_cast<native_handle_t*>(buffer));
+                            (const_cast<native_handle_t*>(buffer));
+
     private_module_t* m =
         reinterpret_cast<private_module_t*>(dev->common.module);
 
-    if (hnd) {
-        m->info.activate = FB_ACTIVATE_VBL | FB_ACTIVATE_FORCE;
-        m->info.yoffset = hnd->offset / m->finfo.line_length;
-#ifdef MSMFB_DISPLAY_COMMIT
-        m->commit.var = m->info;
-        m->commit.flags |= MDP_DISPLAY_COMMIT_OVERLAY;
-        if (ioctl(m->framebuffer->fd, MSMFB_DISPLAY_COMMIT, &m->commit) == -1) {
-            ALOGE("%s: MSMFB_DISPLAY_COMMIT ioctl failed, err: %s", __FUNCTION__,
-                    strerror(errno));
-#else
+
+    if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
+        genlock_lock_buffer(hnd, GENLOCK_READ_LOCK, GENLOCK_MAX_TIMEOUT);
+
+        const size_t offset = hnd->base - m->framebuffer->base;
+        // frame ready to be posted, signal so that hwc can update External
+        // display
+        pthread_mutex_lock(&m->fbPostLock);
+        m->currentOffset = offset;
+        m->fbPostDone = true;
+        pthread_cond_signal(&m->fbPostCond);
+        pthread_mutex_unlock(&m->fbPostLock);
+
+        m->info.activate = FB_ACTIVATE_VBL;
+        m->info.yoffset = offset / m->finfo.line_length;
         if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
-            ALOGE("%s: FBIOPUT_VSCREENINFO ioctl failed, err: %s", __FUNCTION__,
-                    strerror(errno));
-#endif
+            ALOGE("FBIOPUT_VSCREENINFO failed");
+            genlock_unlock_buffer(hnd);
             return -errno;
         }
+#ifndef NO_HW_VSYNC
+        if(ioctl(m->framebuffer->fd, MSMFB_OVERLAY_VSYNC_CTRL, &e) == -1) {
+        ALOGE("MSMFB_OVERLAY_VSYNC_CTRL failed");
+        return -errno;
+        }
+
+#endif
+        //Signals the composition thread to unblock and loop over if necessary
+        pthread_mutex_lock(&m->fbPanLock);
+        m->fbPanDone = true;
+        pthread_cond_signal(&m->fbPanCond);
+        pthread_mutex_unlock(&m->fbPanLock);
+
+        if (m->currentBuffer) {
+            genlock_unlock_buffer(m->currentBuffer);
+            m->currentBuffer = 0;
+        }
+
+        CALC_FPS();
+        m->currentBuffer = hnd;
     }
     return 0;
 }
@@ -146,10 +199,6 @@ int mapFrameBufferLocked(struct private_module_t* module)
     if (fd < 0)
         return -errno;
 
-#ifdef MSMFB_DISPLAY_COMMIT
-    memset(&module->commit, 0, sizeof(struct mdp_display_commit));
-#endif
-
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
@@ -157,7 +206,13 @@ int mapFrameBufferLocked(struct private_module_t* module)
     struct fb_var_screeninfo info;
     if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
-
+#ifndef NO_HW_VSYNC
+    int e = 1;
+    if (ioctl(fd, MSMFB_OVERLAY_VSYNC_CTRL, &e) == -1) {
+        ALOGE("MSMFB_OVERLAY_VSYNC_CTRL failed");
+        return -errno;
+    }
+#endif
     info.reserved[0] = 0;
     info.reserved[1] = 0;
     info.reserved[2] = 0;
@@ -250,6 +305,17 @@ int mapFrameBufferLocked(struct private_module_t* module)
     uint32_t line_length = (info.xres * info.bits_per_pixel / 8);
     info.yres_virtual = (size * numberOfBuffers) / line_length;
 
+#ifndef NO_HW_VSYNC
+    struct msmfb_metadata metadata;
+
+    metadata.op = metadata_op_base_blend;
+    metadata.flags = 0;
+    metadata.data.blend_cfg.is_premultiplied = 1;
+    if(ioctl(fd, MSMFB_METADATA_SET, &metadata) == -1) {
+        ALOGW("MSMFB_METADATA_SET failed to configure alpha mode");
+    }
+#endif
+
     uint32_t flags = PAGE_FLIP;
 
     if (info.yres_virtual < ((size * 2) / line_length) ) {
@@ -273,11 +339,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
     float xdpi = (info.xres * 25.4f) / info.width;
     float ydpi = (info.yres * 25.4f) / info.height;
     //The reserved[3] field is used to store FPS by the driver.
-#ifndef REFRESH_RATE
     float fps  = info.reserved[3] & 0xFF;
-#else
-    float fps  = REFRESH_RATE;
-#endif
 
     ALOGI("using (fd=%d)\n"
           "id           = %s\n"
@@ -331,7 +393,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
      */
 
     int err;
-    module->numBuffers = 2;
+    module->numBuffers = info.yres_virtual / info.yres;
     module->bufferMask = 0;
     //adreno needs page aligned offsets. Align the fbsize to pagesize.
     size_t fbSize = roundUpToPageSize(finfo.line_length * info.yres)*
@@ -371,9 +433,7 @@ static int fb_close(struct hw_device_t *dev)
 {
     fb_context_t* ctx = (fb_context_t*)dev;
     if (ctx) {
-        //Hack until fbdev is removed. Framework could close this causing hwc a
-        //pain.
-        //free(ctx);
+        free(ctx);
     }
     return 0;
 }
@@ -419,7 +479,11 @@ int fb_device_open(hw_module_t const* module, const char* name,
             const_cast<int&>(dev->device.maxSwapInterval) =
                                                         PRIV_MAX_SWAP_INTERVAL;
             const_cast<int&>(dev->device.numFramebuffers) = m->numBuffers;
-            dev->device.setUpdateRect = 0;
+            if (m->finfo.reserved[0] == 0x5444 &&
+                m->finfo.reserved[1] == 0x5055) {
+                dev->device.setUpdateRect = fb_setUpdateRect;
+                ALOGD("UPDATE_ON_DEMAND supported");
+            }
 
             *device = &dev->device.common;
         }

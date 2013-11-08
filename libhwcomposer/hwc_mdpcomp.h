@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
  * Not a Contribution, Apache license notifications and license are retained
  * for attribution purposes only.
  *
@@ -24,47 +24,125 @@
 #include <cutils/properties.h>
 #include <overlay.h>
 
+#define MAX_STATIC_PIPES 3
+#define MDPCOMP_INDEX_OFFSET 4
 #define DEFAULT_IDLE_TIME 2000
 
+#define MAX_VG 2
+#define MAX_RGB 2
+#define VAR_INDEX 3
+#define MAX_PIPES (MAX_VG + MAX_RGB)
+#define HWC_MDPCOMP_INDEX_MASK 0x00000030
+
+
+//struct hwc_context_t;
+
 namespace qhwc {
-namespace ovutils = overlay::utils;
+
+// pipe status
+enum {
+    PIPE_UNASSIGNED = 0,
+    PIPE_IN_FB_MODE,
+    PIPE_IN_COMP_MODE,
+};
+
+// pipe request
+enum {
+    PIPE_NONE = 0,
+    PIPE_REQ_VG,
+    PIPE_REQ_RGB,
+    PIPE_REQ_FB,
+};
+
+// MDP Comp Status
+enum {
+    MDPCOMP_SUCCESS = 0,
+    MDPCOMP_FAILURE,
+    MDPCOMP_ABORT,
+};
+
+//This class manages the status of 4 MDP pipes and keeps
+//track of Variable pipe mode.
+class PipeMgr {
+
+public:
+    PipeMgr() { reset();}
+    //reset pipemgr params
+    void reset();
+
+    //Based on the preference received, pipe mgr
+    //allocates the best available pipe to handle
+    //the case
+    int req_for_pipe(int pipe_req);
+
+    //Allocate requested pipe and update availablity
+    int assign_pipe(int pipe_pref);
+
+    // Get/Set pipe status
+    void setStatus(int pipe_index, int pipe_status) {
+        mStatus[pipe_index] = pipe_status;
+    }
+    int getStatus(int pipe_index) {
+        return mStatus[pipe_index];
+    }
+private:
+    int mVGPipes;
+    int mVGUsed;
+    int mVGIndex;
+    int mRGBPipes;
+    int mRGBUsed;
+    int mRGBIndex;
+    int mTotalAvail;
+    int mStatus[MAX_PIPES];
+};
+
 
 class MDPComp {
-    enum eState {
+    enum State {
         MDPCOMP_ON = 0,
         MDPCOMP_OFF,
     };
 
-    enum ePipeType {
-        MDPCOMP_OV_RGB = ovutils::OV_MDP_PIPE_RGB,
-        MDPCOMP_OV_VG = ovutils::OV_MDP_PIPE_VG,
-        MDPCOMP_OV_ANY,
+    enum {
+        MDPCOMP_LAYER_BLEND = 1,
+        MDPCOMP_LAYER_DOWNSCALE = 2,
+        MDPCOMP_LAYER_SKIP = 4,
+        MDPCOMP_LAYER_UNSUPPORTED_MEM = 8,
     };
 
-    struct MdpPipeInfo {
+    struct mdp_pipe_info {
         int index;
-        int zOrder;
+        int z_order;
+        bool isVG;
+        bool isFG;
+        bool vsync_wait;
     };
 
-    struct PipeLayerPair {
-        MdpPipeInfo pipeIndex;
+    struct pipe_layer_pair {
+        int layer_index;
+        mdp_pipe_info pipe_index;
         native_handle_t* handle;
     };
 
-    struct FrameInfo {
+    struct frame_info {
         int count;
-        struct PipeLayerPair* pipeLayer;
+        struct pipe_layer_pair* pipe_layer;
 
     };
 
-    static eState sMDPCompState;
+    struct layer_mdp_info {
+        bool can_use_mdp;
+        int pipe_pref;
+    };
+
+    static State sMDPCompState;
     static IdleInvalidator *idleInvalidator;
-    static struct FrameInfo sCurrentFrame;
-    static bool sEnabled;
+    static struct frame_info sCurrentFrame;
+    static PipeMgr sPipeMgr;
+    static int sSkipCount;
+    static int sMaxLayers;
     static bool sDebugLogs;
     static bool sIdleFallBack;
-    static int sActiveMax;
-    static bool sSecuredVid;
 
 public:
     /* Handler to invoke frame redraw on Idle Timer expiry */
@@ -73,21 +151,24 @@ public:
     /* configure/tear-down MDPComp params*/
     static bool init(hwc_context_t *ctx);
     static bool deinit();
-    static bool isUsed() { return (sMDPCompState == MDPCOMP_ON); };
 
     /*sets up mdp comp for the current frame */
-    static bool configure(hwc_context_t *ctx,
-                            hwc_display_contents_1_t* list);
+    static bool configure(hwc_composer_device_1_t *ctx,  hwc_display_contents_1_t* list);
 
     /* draw */
-    static bool draw(hwc_context_t *ctx, hwc_display_contents_1_t *list);
+    static int draw(hwc_context_t *ctx, hwc_display_contents_1_t *list);
 
-    static void dump(android::String8& buf);
+    /* store frame stats */
+    static void setStats(int skipCt) { sSkipCount  = skipCt;};
 
 private:
+
+    /* get/set pipe index associated with overlay layers */
+    static void setLayerIndex(hwc_layer_1_t* layer, const int pipe_index);
+    static int  getLayerIndex(hwc_layer_1_t* layer);
+
     /* set/reset flags for MDPComp */
-    static void setMDPCompLayerFlags(hwc_context_t *ctx,
-                                       hwc_display_contents_1_t* list);
+    static void setMDPCompLayerFlags(hwc_display_contents_1_t* list);
     static void unsetMDPCompLayerFlags(hwc_context_t* ctx,
                                        hwc_display_contents_1_t* list);
 
@@ -95,42 +176,43 @@ private:
 
     /* configure's overlay pipes for the frame */
     static int  prepare(hwc_context_t *ctx, hwc_layer_1_t *layer,
-                        MdpPipeInfo& mdp_info);
+                        mdp_pipe_info& mdp_info);
 
     /* checks for conditions where mdpcomp is not possible */
-    static bool isDoable(hwc_context_t *ctx, hwc_display_contents_1_t* list);
+    static bool is_doable(hwc_composer_device_1_t *dev, hwc_display_contents_1_t* list);
 
     static bool setup(hwc_context_t* ctx, hwc_display_contents_1_t* list);
 
+    /* parses layer for properties affecting mdp comp */
+    static void get_layer_info(hwc_layer_1_t* layer, int& flags);
+
+    /* iterates through layer list to choose candidate to use overlay */
+    static int  mark_layers(hwc_display_contents_1_t* list, layer_mdp_info* layer_info,
+                                                  frame_info& current_frame);
+    static bool parse_and_allocate(hwc_context_t* ctx, hwc_display_contents_1_t* list,
+                                                  frame_info& current_frame );
+
+    /* clears layer info struct */
+    static void reset_layer_mdp_info(layer_mdp_info* layer_mdp_info,int count);
+
     /* allocates pipes to selected candidates */
-    static bool allocLayerPipes(hwc_context_t *ctx,
-            hwc_display_contents_1_t* list,
-            FrameInfo& current_frame);
+    static bool alloc_layer_pipes(hwc_display_contents_1_t* list,
+                                  layer_mdp_info* layer_info,
+                                  frame_info& current_frame);
+    /* updates variable pipe mode for the current frame */
+    static int  configure_var_pipe(hwc_context_t* ctx);
 
     /* get/set states */
-    static eState getState() { return sMDPCompState; };
+    static State get_state() { return sMDPCompState; };
+    static void set_state(State state) { sMDPCompState = state; };
 
     /* reset state */
     static void reset( hwc_context_t *ctx, hwc_display_contents_1_t* list );
 
     /* Is feature enabled */
-    static bool isEnabled() { return sEnabled; };
-
+    static bool isEnabled() { return sMaxLayers ? true : false; };
     /* Is debug enabled */
     static bool isDebug() { return sDebugLogs ? true : false; };
-
-    /* check layer state */
-    static bool isSkipPresent (hwc_context_t *ctx);
-    static bool isYuvPresent (hwc_context_t *ctx);
-
-    /* configure MDP flags for video buffers */
-    static void setVidInfo(hwc_layer_1_t *layer, ovutils::eMdpFlags &mdpFlags);
-
-    /* set up Border fill as Base pipe */
-    static bool setupBasePipe(hwc_context_t*);
-
-    /* allocate MDP pipes from overlay */
-    static int getMdpPipe(hwc_context_t *ctx, ePipeType type);
 };
 }; //namespace
 #endif
