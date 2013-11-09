@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (c) 2011-2012 Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2011-2012 The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,9 @@ gpu_context_t::gpu_context_t(const private_module_t* module,
     common.module  = const_cast<hw_module_t*>(&module->base.common);
     common.close   = gralloc_close;
     alloc          = gralloc_alloc;
+#if 0
+    allocSize      = gralloc_alloc_size;
+#endif
     free           = gralloc_free;
 
 }
@@ -153,6 +156,18 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
         }
     }
 
+    if (usage & GRALLOC_USAGE_HW_VIDEO_ENCODER ) {
+        flags |= private_handle_t::PRIV_FLAGS_VIDEO_ENCODER;
+    }
+
+    if (usage & GRALLOC_USAGE_HW_CAMERA_WRITE) {
+        flags |= private_handle_t::PRIV_FLAGS_CAMERA_WRITE;
+    }
+
+    if (usage & GRALLOC_USAGE_HW_CAMERA_READ) {
+        flags |= private_handle_t::PRIV_FLAGS_CAMERA_READ;
+    }
+
     if (err == 0) {
         flags |= data.allocType;
         private_handle_t* hnd = new private_handle_t(data.fd, size, flags,
@@ -169,22 +184,15 @@ int gpu_context_t::gralloc_alloc_buffer(size_t size, int usage,
 }
 
 void gpu_context_t::getGrallocInformationFromFormat(int inputFormat,
-                                                    int *colorFormat,
                                                     int *bufferType)
 {
     *bufferType = BUFFER_TYPE_VIDEO;
-    *colorFormat = inputFormat;
 
-    // HAL_PIXEL_FORMAT_RGB_888 is MPQ color format for VCAP videos
-    // value of RGB_888 is less than 0x7 and this format is not supported
-    // by the GPU
-    if ((inputFormat < 0x7) && (inputFormat != HAL_PIXEL_FORMAT_RGB_888)) {
+    if (inputFormat < 0x7) {
         // RGB formats
-        *colorFormat = inputFormat;
         *bufferType = BUFFER_TYPE_UI;
     } else if ((inputFormat == HAL_PIXEL_FORMAT_R_8) ||
                (inputFormat == HAL_PIXEL_FORMAT_RG_88)) {
-        *colorFormat = inputFormat;
         *bufferType = BUFFER_TYPE_UI;
     }
 }
@@ -197,9 +205,22 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
 
     size_t size;
     int alignedw, alignedh;
-    int colorFormat, bufferType;
-    getGrallocInformationFromFormat(format, &colorFormat, &bufferType);
-    size = getBufferSizeAndDimensions(w, h, colorFormat, alignedw, alignedh);
+    int grallocFormat = format;
+    int bufferType;
+
+    //If input format is HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED then based on
+    //the usage bits, gralloc assigns a format.
+    if(format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+        if(usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
+            grallocFormat = HAL_PIXEL_FORMAT_YCbCr_420_SP; //NV12
+        else if(usage & GRALLOC_USAGE_HW_CAMERA_READ)
+            grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
+        else if(usage & GRALLOC_USAGE_HW_CAMERA_WRITE)
+            grallocFormat = HAL_PIXEL_FORMAT_YCrCb_420_SP; //NV21
+    }
+
+    getGrallocInformationFromFormat(grallocFormat, &bufferType);
+    size = getBufferSizeAndDimensions(w, h, grallocFormat, alignedw, alignedh);
 
     if ((ssize_t)size <= 0)
         return -EINVAL;
@@ -213,11 +234,14 @@ int gpu_context_t::alloc_impl(int w, int h, int format, int usage,
         bufferType = BUFFER_TYPE_VIDEO;
     }
     int err;
-    if (usage & GRALLOC_USAGE_HW_FB) {
+    private_module_t* m = reinterpret_cast<private_module_t*>(common.module);
+    uint32_t bufferMask = m->bufferMask;
+    uint32_t numBuffers = m->numBuffers;
+    if (usage & GRALLOC_USAGE_HW_FB && (bufferMask < ((1LU << numBuffers) - 1))) {
         err = gralloc_alloc_framebuffer(size, usage, pHandle);
     } else {
         err = gralloc_alloc_buffer(size, usage, pHandle, bufferType,
-                                   format, alignedw, alignedh);
+                                   grallocFormat, alignedw, alignedh);
     }
 
     if (err < 0) {

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
+* Copyright (c) 2011, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
 *      copyright notice, this list of conditions and the following
 *      disclaimer in the documentation and/or other materials provided
 *      with the distribution.
-*    * Neither the name of Code Aurora Forum, Inc. nor the names of its
+*    * Neither the name of The Linux Foundation nor the names of its
 *      contributors may be used to endorse or promote products derived
 *      from this software without specific prior written permission.
 *
@@ -35,7 +35,7 @@
 #include <fcntl.h>
 #include <alloc_controller.h>
 #include <memalloc.h>
-
+#include <mdp_version.h>
 #include "gralloc_priv.h"
 #include "overlayUtils.h"
 
@@ -118,15 +118,13 @@ inline bool OvMem::open(uint32_t numbufs,
         uint32_t bufSz, bool isSecure)
 {
     alloc_data data;
-
-    int err = 0;
     int allocFlags = GRALLOC_USAGE_PRIVATE_MM_HEAP | GRALLOC_USAGE_PRIVATE_IOMMU_HEAP;
     if(isSecure) {
         allocFlags |= GRALLOC_USAGE_PRIVATE_MM_HEAP;
         allocFlags |= GRALLOC_USAGE_PRIVATE_DO_NOT_MAP;
-        allocFlags |= GRALLOC_USAGE_PRIVATE_CP_BUFFER;
     }
 
+    int err = 0;
     OVASSERT(numbufs && bufSz, "numbufs=%d bufSz=%d", numbufs, bufSz);
 
     mBufSz = bufSz;
@@ -143,7 +141,10 @@ inline bool OvMem::open(uint32_t numbufs,
     //see if we can fallback to other heap
     //we can try MM_HEAP once if it's not secure playback
     if (err != 0 && !isSecure) {
-        allocFlags |= GRALLOC_USAGE_PRIVATE_MM_HEAP;
+        if(qdutils::MDPVersion::getInstance().getMDPVersion() > qdutils::MDP_V4_0 )
+               allocFlags |= GRALLOC_USAGE_PRIVATE_MM_HEAP;
+        else
+               allocFlags |= GRALLOC_USAGE_PRIVATE_CAMERA_HEAP;
         err = mAlloc->allocate(data, allocFlags, 0);
         if (err != 0) {
             ALOGE(" could not allocate from fallback heap");

@@ -31,7 +31,7 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <cutils/log.h>
-#include "ashmem.h"
+#include <linux/ashmem.h>
 #include <cutils/ashmem.h>
 #include <errno.h>
 #include "ashmemalloc.h"

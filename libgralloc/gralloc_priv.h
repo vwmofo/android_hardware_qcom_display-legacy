@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,10 +48,8 @@ enum {
     GRALLOC_USAGE_PRIVATE_IOMMU_HEAP      =       0x01000000,
     /* MM heap is a carveout heap for video, can be secured*/
     GRALLOC_USAGE_PRIVATE_MM_HEAP         =       0x02000000,
-
-    /* Buffer content should be displayed on an primary display only */
-    GRALLOC_USAGE_PRIVATE_INTERNAL_ONLY   =       0x04000000,
-
+    /* WRITEBACK heap is a carveout heap for writeback, can be secured*/
+    GRALLOC_USAGE_PRIVATE_WRITEBACK_HEAP  =       0x04000000,
     /* CAMERA heap is a carveout heap for camera, is not secured*/
     GRALLOC_USAGE_PRIVATE_CAMERA_HEAP     =       0x08000000,
 
@@ -76,25 +74,22 @@ enum {
     GRALLOC_USAGE_PRIVATE_DO_NOT_MAP      =       0X00800000,
 
     /* Buffer content should be displayed on an external display only */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY   =       0x00010000,
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY   =       0x08000000,
 
     /* Only this buffer content should be displayed on external, even if
      * other EXTERNAL_ONLY buffers are available. Used during suspend.
      */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK  =       0x00020000,
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK  =       0x00100000,
 
     /* Close Caption displayed on an external display only */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_CC     =       0x00040000,
+    GRALLOC_USAGE_PRIVATE_EXTERNAL_CC     =       0x00200000,
 
     /* Use this flag to request content protected buffers. Please note
      * that this flag is different from the GRALLOC_USAGE_PROTECTED flag
      * which can be used for buffers that are not secured for DRM
      * but still need to be protected from screen captures
      */
-    GRALLOC_USAGE_PRIVATE_CP_BUFFER       =       0x00080000,
-
-    /* WRITEBACK heap is a carveout heap for writeback, can be secured*/
-    GRALLOC_USAGE_PRIVATE_WRITEBACK_HEAP  =       0x00001000,
+    GRALLOC_USAGE_PRIVATE_CP_BUFFER       =       0x00400000,
 };
 
 enum {
@@ -113,11 +108,7 @@ enum {
 enum {
     /* OEM specific HAL formats */
     HAL_PIXEL_FORMAT_NV12_ENCODEABLE        = 0x102,
-#ifdef QCOM_ICS_COMPAT
-    HAL_PIXEL_FORMAT_YCbCr_420_SP_TILED     = 0x108,
-#else
     HAL_PIXEL_FORMAT_YCbCr_420_SP_TILED     = 0x7FA30C03,
-#endif
     HAL_PIXEL_FORMAT_YCbCr_420_SP           = 0x109,
     HAL_PIXEL_FORMAT_YCrCb_420_SP_ADRENO    = 0x7FA30C01,
     HAL_PIXEL_FORMAT_YCrCb_422_SP           = 0x10B,
@@ -178,6 +169,9 @@ struct private_handle_t : public native_handle {
             PRIV_FLAGS_EXTERNAL_BLOCK     = 0x00004000,
             // Display this buffer on external as close caption
             PRIV_FLAGS_EXTERNAL_CC        = 0x00008000,
+            PRIV_FLAGS_VIDEO_ENCODER      = 0x00010000,
+            PRIV_FLAGS_CAMERA_WRITE       = 0x00020000,
+            PRIV_FLAGS_CAMERA_READ        = 0x00040000,
         };
 
         // file-descriptors

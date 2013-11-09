@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, Code Aurora Forum. All rights reserved.
+ * Copyright (C) 2012, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -27,58 +27,163 @@
 #include <utils/Errors.h>
 #include <utils/Log.h>
 
-#include "msm_mdp.h"
+#include <linux/msm_mdp.h>
 #include <linux/fb.h>
 #include <sys/ioctl.h>
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <cutils/properties.h>
 #include "hwc_utils.h"
-#include "hwc_external.h"
+#include "external.h"
 #include "overlayUtils.h"
+#include "overlay.h"
 
 using namespace android;
 
 namespace qhwc {
 
-static const char *extPanelName[MAX_DISPLAY_EXTERNAL_DEVICES] = {
-    HDMI_PANEL,
-    WFD_PANEL
-};
+#define MAX_FRAME_BUFFER_NAME_SIZE      (80)
+#define MAX_DISPLAY_DEVICES             (3)
+
+
+const char* msmFbDevicePath[] = {  "/dev/graphics/fb1",
+                                   "/dev/graphics/fb2"};
+
+/*
+ * Updates extDeviceFbIndex Array with the correct frame buffer indices
+ * of avaiable external devices
+ *
+ */
+void ExternalDisplay::updateExtDispDevFbIndex()
+{
+    FILE *displayDeviceFP = NULL;
+    char fbType[MAX_FRAME_BUFFER_NAME_SIZE];
+    char msmFbTypePath[MAX_FRAME_BUFFER_NAME_SIZE];
+
+    for(int j = 1; j < MAX_DISPLAY_DEVICES; j++) {
+        sprintf (msmFbTypePath,"/sys/class/graphics/fb%d/msm_fb_type", j);
+        displayDeviceFP = fopen(msmFbTypePath, "r");
+        if(displayDeviceFP){
+            fread(fbType, sizeof(char), MAX_FRAME_BUFFER_NAME_SIZE,
+                    displayDeviceFP);
+            if(strncmp(fbType, "dtv panel", strlen("dtv panel")) == 0){
+                ALOGD_IF(DEBUG,"hdmi framebuffer index is %d",j);
+                mHdmiFbNum = j;
+            } else if(strncmp(fbType, "writeback panel",
+                                    strlen("writeback panel")) == 0){
+                ALOGD_IF(DEBUG,"wfd framebuffer index is %d",j);
+                mWfdFbNum = j;
+            }
+            fclose(displayDeviceFP);
+        }
+    }
+    ALOGD_IF(DEBUG,"%s: mHdmiFbNum: %d mWfdFbNum: %d ",__FUNCTION__,
+                                                       mHdmiFbNum, mWfdFbNum);
+}
+
+int ExternalDisplay::configureHDMIDisplay() {
+    openFrameBuffer(mHdmiFbNum);
+    if(mFd == -1)
+        return -1;
+    readResolution();
+    //Get the best mode and set
+    // TODO: Move this to activate
+    setResolution(getBestMode());
+    setDpyHdmiAttr();
+    setExternalDisplay(true, mHdmiFbNum);
+    return 0;
+}
+
+int ExternalDisplay::configureWFDDisplay() {
+    int ret = 0;
+    if(mConnectedFbNum == mHdmiFbNum) {
+        ALOGE("%s: Cannot process WFD connection while HDMI is active",
+                     __FUNCTION__);
+        return -1;
+    }
+    openFrameBuffer(mWfdFbNum);
+    if(mFd == -1)
+        return -1;
+    ret = ioctl(mFd, FBIOGET_VSCREENINFO, &mVInfo);
+    if(ret < 0) {
+        ALOGD("In %s: FBIOGET_VSCREENINFO failed Err Str = %s", __FUNCTION__,
+                strerror(errno));
+    }
+    setDpyWfdAttr();
+    setExternalDisplay(true, mWfdFbNum);
+    return 0;
+}
+
+int ExternalDisplay::teardownHDMIDisplay() {
+    if(mConnectedFbNum == mHdmiFbNum) {
+        // hdmi offline event..!
+        closeFrameBuffer();
+        resetInfo();
+        setExternalDisplay(false);
+    }
+    return 0;
+}
+
+int ExternalDisplay::teardownWFDDisplay() {
+    if(mConnectedFbNum == mWfdFbNum) {
+        // wfd offline event..!
+        closeFrameBuffer();
+        memset(&mVInfo, 0, sizeof(mVInfo));
+        setExternalDisplay(false);
+    }
+    return 0;
+}
+
+void ExternalDisplay::processUEventOnline(const char *str) {
+    const char *s1 = str + strlen("change@/devices/virtual/switch/");
+    if(!strncmp(s1,"hdmi",strlen(s1))) {
+        // hdmi online event..!
+        configureHDMIDisplay();
+    }else if(!strncmp(s1,"wfd",strlen(s1))) {
+        // wfd online event..!
+        configureWFDDisplay();
+    }
+}
+
+void ExternalDisplay::processUEventOffline(const char *str) {
+    const char *s1 = str + strlen("change@/devices/virtual/switch/");
+    if(!strncmp(s1,"hdmi",strlen(s1))) {
+        teardownHDMIDisplay();
+    }else if(!strncmp(s1,"wfd",strlen(s1))) {
+        teardownWFDDisplay();
+    }
+}
 
 ExternalDisplay::ExternalDisplay(hwc_context_t* ctx):mFd(-1),
-    mCurrentMode(-1), mExternalDisplay(0), mModeCount(0), mHwcContext(ctx)
+    mCurrentMode(-1), mConnected(0), mConnectedFbNum(0), mModeCount(0),
+    mHwcContext(ctx), mHdmiFbNum(-1), mWfdFbNum(-1)
 {
     memset(&mVInfo, 0, sizeof(mVInfo));
-
-    //Enable HPD for HDMI
-    if(isHDMIConfigured()) {
-        writeHPDOption(1);
-    }
+    //Determine the fb index for external display devices.
+    updateExtDispDevFbIndex();
 }
 
 void ExternalDisplay::setEDIDMode(int resMode) {
     ALOGD_IF(DEBUG,"resMode=%d ", resMode);
-    int extDispType;
     {
         Mutex::Autolock lock(mExtDispLock);
-        extDispType = mExternalDisplay;
-        setExternalDisplay(0);
+        setExternalDisplay(false);
+        openFrameBuffer(mHdmiFbNum);
         setResolution(resMode);
     }
-    setExternalDisplay(extDispType);
+    setExternalDisplay(true, mHdmiFbNum);
 }
 
-void ExternalDisplay::setHPDStatus(int enabled) {
-    ALOGD_IF(DEBUG,"HPD enabled=%d", enabled);
-    writeHPDOption(enabled);
+void ExternalDisplay::setHPD(uint32_t startEnd) {
+    ALOGD_IF(DEBUG,"HPD enabled=%d", startEnd);
+    writeHPDOption(startEnd);
 }
 
 void ExternalDisplay::setActionSafeDimension(int w, int h) {
     ALOGD_IF(DEBUG,"ActionSafe w=%d h=%d", w, h);
     Mutex::Autolock lock(mExtDispLock);
     overlay::utils::ActionSafe::getInstance()->setDimension(w, h);
-    setExternalDisplay(mExternalDisplay);
+    setExternalDisplay(true, mHdmiFbNum);
 }
 
 int ExternalDisplay::getModeCount() const {
@@ -92,11 +197,6 @@ void ExternalDisplay::getEDIDModes(int *out) const {
     for(int i = 0;i < mModeCount;i++) {
         out[i] = mEDIDModes[i];
     }
-}
-
-int ExternalDisplay::getExternalDisplay() const {
-    Mutex::Autolock lock(mExtDispLock);
-    return mExternalDisplay;
 }
 
 ExternalDisplay::~ExternalDisplay()
@@ -129,7 +229,7 @@ void disp_mode_timing_type::set_info(struct fb_var_screeninfo &info) const
     info.reserved[0] = 0;
     info.reserved[1] = 0;
     info.reserved[2] = 0;
-    info.reserved[3] = info.reserved[3] | (video_format << 16);
+    info.reserved[3] = (info.reserved[3] & 0xFFFF) | (video_format << 16);
 
     info.xoffset = 0;
     info.yoffset = 0;
@@ -210,12 +310,16 @@ int ExternalDisplay::parseResolution(char* edidStr, int* edidModes)
 
 bool ExternalDisplay::readResolution()
 {
-    int hdmiEDIDFile = open(SYSFS_EDID_MODES, O_RDONLY, 0);
+    char sysFsEDIDFilePath[255];
+    sprintf(sysFsEDIDFilePath , "/sys/devices/virtual/graphics/fb%d/edid_modes",
+            mHdmiFbNum);
+
+    int hdmiEDIDFile = open(sysFsEDIDFilePath, O_RDONLY, 0);
     int len = -1;
 
     if (hdmiEDIDFile < 0) {
         ALOGE("%s: edid_modes file '%s' not found",
-                 __FUNCTION__, SYSFS_EDID_MODES);
+                 __FUNCTION__, sysFsEDIDFilePath);
         return false;
     } else {
         len = read(hdmiEDIDFile, mEDIDs, sizeof(mEDIDs)-1);
@@ -223,7 +327,7 @@ bool ExternalDisplay::readResolution()
                  __FUNCTION__, mEDIDs, len);
         if ( len <= 0) {
             ALOGE("%s: edid_modes file empty '%s'",
-                     __FUNCTION__, SYSFS_EDID_MODES);
+                     __FUNCTION__, sysFsEDIDFilePath);
         }
         else {
             while (len > 1 && isspace(mEDIDs[len-1]))
@@ -233,7 +337,7 @@ bool ExternalDisplay::readResolution()
     }
     close(hdmiEDIDFile);
     if(len > 0) {
-        // GEt EDID modes from the EDID strings
+        // Get EDID modes from the EDID strings
         mModeCount = parseResolution(mEDIDs, mEDIDModes);
         ALOGD_IF(DEBUG, "%s: mModeCount = %d", __FUNCTION__,
                  mModeCount);
@@ -242,19 +346,16 @@ bool ExternalDisplay::readResolution()
     return (strlen(mEDIDs) > 0);
 }
 
-const char* msmFbDevicePath[2] = {  "/dev/graphics/fb1",
-                                    "/dev/graphics/fb2"};
-
-
 bool ExternalDisplay::openFrameBuffer(int fbNum)
 {
     if (mFd == -1) {
-        ALOGD_IF(DEBUG, "In %s: opening the framebuffer device = %d",
-                                                  __FUNCTION__, fbNum);
         mFd = open(msmFbDevicePath[fbNum-1], O_RDWR);
         if (mFd < 0)
-            ALOGE("%s: %s not available", __FUNCTION__,
-                                                    msmFbDevicePath[fbNum-1]);
+            ALOGE("%s: %s is not available", __FUNCTION__,
+                                            msmFbDevicePath[fbNum-1]);
+        if(mHwcContext) {
+            mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].fd = mFd;
+        }
     }
     return (mFd > 0);
 }
@@ -265,6 +366,9 @@ bool ExternalDisplay::closeFrameBuffer()
     if(mFd > 0) {
         ret = close(mFd);
         mFd = -1;
+    }
+    if(mHwcContext) {
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].fd = mFd;
     }
     return (ret == 0);
 }
@@ -346,8 +450,6 @@ void ExternalDisplay::setResolution(int ID)
 {
     struct fb_var_screeninfo info;
     int ret = 0;
-    if (!openFrameBuffer(EXTERN_DISPLAY_FB1))
-        return;
     ret = ioctl(mFd, FBIOGET_VSCREENINFO, &mVInfo);
     if(ret < 0) {
         ALOGD("In %s: FBIOGET_VSCREENINFO failed Err Str = %s", __FUNCTION__,
@@ -391,134 +493,49 @@ void ExternalDisplay::setResolution(int ID)
     }
 }
 
-/*
- * This function queries the msm_fb_type for fb1 and checks whether it is
- * HDMI or not
- *
- * Returns:
- *          0 -> WFD device
- *          1 -> HDMI device
- */
-bool ExternalDisplay::isHDMIConfigured() {
-    bool configured = false;
-    FILE *displayDeviceFP = NULL;
-    char fbType[MAX_FRAME_BUFFER_NAME_SIZE];
-    displayDeviceFP = fopen("/sys/class/graphics/fb1/msm_fb_type", "r");
-
-    if(displayDeviceFP) {
-        fread(fbType, sizeof(char), MAX_FRAME_BUFFER_NAME_SIZE, displayDeviceFP);
-
-        if(!strncmp(fbType, extPanelName[0], sizeof(extPanelName[0]))) {
-            configured  = true;
-        }
-        fclose(displayDeviceFP);
-    }
-    return configured;
-}
-
-void ExternalDisplay::processUEventOffline(const char *str) {
-    const char *s1 = str + (strlen(str)-strlen(DEVICE_NODE_FB1));
-    // check if it is for FB1
-    if(strncmp(s1,DEVICE_NODE_FB1, strlen(DEVICE_NODE_FB1))== 0) {
-        if(isHDMIConfigured()) {
-            enableHDMIVsync(EXTERN_DISPLAY_NONE);
-            closeFrameBuffer();
-            resetInfo();
-        } else {
-            closeFrameBuffer();
-        }
-    }
-    else if(strncmp(s1, DEVICE_NODE_FB2, strlen(DEVICE_NODE_FB2)) == 0) {
-        closeFrameBuffer();
-    }
-    setExternalDisplay(EXTERN_DISPLAY_NONE);
-}
-
-void ExternalDisplay::configureWFDDisplay(int fbIndex) {
-    int ret = 0;
-    if (!openFrameBuffer(fbIndex))
-        return;
-    ret = ioctl(mFd, FBIOGET_VSCREENINFO, &mVInfo);
-    if(ret < 0) {
-        ALOGD("In %s: FBIOGET_VSCREENINFO failed Err Str = %s", __FUNCTION__,
-                strerror(errno));
-    }
-    mVInfo.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_ALL | FB_ACTIVATE_FORCE;
-}
-
-void ExternalDisplay::processUEventOnline(const char *str) {
-    const char *s1 = str + (strlen(str)-strlen(DEVICE_NODE_FB1));
-    // check if it is for FB1
-    if(strncmp(s1,DEVICE_NODE_FB1, strlen(DEVICE_NODE_FB1))== 0) {
-        if(isHDMIConfigured()) {
-            // HDMI connect event.
-            // Tear-down WFD if it is active.
-            if(mExternalDisplay == EXTERN_DISPLAY_FB2) {
-                closeFrameBuffer();
-                setExternalDisplay(EXTERN_DISPLAY_NONE);
-            }
-            readResolution();
-            //Get the best mode and set
-            setResolution(getBestMode());
-            enableHDMIVsync(EXTERN_DISPLAY_FB1);
-        } else {
-            configureWFDDisplay(EXTERN_DISPLAY_FB1);
-        }
-        setExternalDisplay(EXTERN_DISPLAY_FB1);
-    }
-    else if(strncmp(s1, DEVICE_NODE_FB2, strlen(DEVICE_NODE_FB2)) == 0) {
-        // WFD connect event
-        if(mExternalDisplay  == EXTERN_DISPLAY_FB1) {
-            // HDMI has higher priority.
-            // Do Not Override.
-        }else {
-            // WFD is connected
-            configureWFDDisplay(EXTERN_DISPLAY_FB2);
-            setExternalDisplay(EXTERN_DISPLAY_FB2);
-        }
-    }
-}
-
-void ExternalDisplay::setExternalDisplay(int connected)
+void ExternalDisplay::setExternalDisplay(bool connected, int extFbNum)
 {
     hwc_context_t* ctx = mHwcContext;
     if(ctx) {
-        ALOGD_IF(DEBUG, "%s: status = %d", __FUNCTION__,
-                 connected);
+        ALOGD_IF(DEBUG, "%s: connected = %d", __FUNCTION__, connected);
         // Store the external display
-        mExternalDisplay = connected;
-        ALOGD_IF(DEBUG, "In %s: mExternalDisplay = %d", __FUNCTION__,
-                                                         mExternalDisplay);
-        const char* prop = (connected) ? "1" : "0";
-        // set system property
-        property_set("hw.hdmiON", prop);
-        /* Trigger redraw */
-        ALOGD_IF(DEBUG, "%s: Invalidate !!", __FUNCTION__);
-        ctx->proc->invalidate(ctx->proc);
+        mConnected = connected;
+        mConnectedFbNum = extFbNum;
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].connected = connected;
+        // Update external fb number in Overlay context
+        overlay::Overlay::getInstance()->setExtFbNum(extFbNum);
     }
-    return;
+}
+
+int ExternalDisplay::getExtFbNum(int &fbNum) {
+    int ret = -1;
+    if(mConnected) {
+        fbNum = mConnectedFbNum;
+        ret = 0;
+    }
+    return ret;
 }
 
 bool ExternalDisplay::writeHPDOption(int userOption) const
 {
     bool ret = true;
-    int hdmiHPDFile = open(SYSFS_HPD,O_RDWR, 0);
+    char sysFsHPDFilePath[255];
+    sprintf(sysFsHPDFilePath ,"/sys/devices/virtual/graphics/fb%d/hpd",
+                                mHdmiFbNum);
+    int hdmiHPDFile = open(sysFsHPDFilePath,O_RDWR, 0);
     if (hdmiHPDFile < 0) {
-        ALOGE("%s: state file '%s' not found : ret%d"
-                           "err str: %s",  __FUNCTION__, SYSFS_HPD, hdmiHPDFile,
-                           strerror(errno));
+        ALOGE("%s: state file '%s' not found : ret%d err str: %s", __FUNCTION__,
+                                sysFsHPDFilePath, hdmiHPDFile, strerror(errno));
         ret = false;
     } else {
         int err = -1;
-        ALOGD_IF(DEBUG, "%s: option = %d", __FUNCTION__,
-                 userOption);
+        ALOGD_IF(DEBUG, "%s: option = %d", __FUNCTION__, userOption);
         if(userOption)
             err = write(hdmiHPDFile, "1", 2);
         else
             err = write(hdmiHPDFile, "0" , 2);
         if (err <= 0) {
-            ALOGE("%s: file write failed '%s'",
-                     __FUNCTION__, SYSFS_HPD);
+            ALOGE("%s: file write failed '%s'", __FUNCTION__, sysFsHPDFilePath);
             ret = false;
         }
         close(hdmiHPDFile);
@@ -528,45 +545,105 @@ bool ExternalDisplay::writeHPDOption(int userOption) const
 
 /*
  * commits the changes to the external display
- * mExternalDisplay has the mixer number(1-> HDMI 2-> WFD)
  */
-bool ExternalDisplay::commit()
+bool ExternalDisplay::post()
 {
-    if(mFd == -1) {
+    if(mFd == -1)
         return false;
-#ifdef MSMFB_OVERLAY_COMMIT
-    } else if(ioctl(mFd, MSMFB_OVERLAY_COMMIT, &mExternalDisplay) == -1) {
-         ALOGE("%s: MSMFB_OVERLAY_COMMIT failed errno: %d , str: %s",
-                                       __FUNCTION__, errno, strerror(errno));
+#ifdef MSMFB_DISPLAY_COMMIT
+    struct mdp_display_commit ext_commit;
+    memset(&ext_commit, 0, sizeof(struct mdp_display_commit));
+    ext_commit.flags = MDP_DISPLAY_COMMIT_OVERLAY;
+    if (ioctl(mFd, MSMFB_DISPLAY_COMMIT, &ext_commit) == -1) {
+        ALOGE("%s: MSMFB_DISPLAY_COMMIT for external failed, str: %s",
+                __FUNCTION__, strerror(errno));
 #else
-    } else if(ioctl(mFd, FBIOPUT_VSCREENINFO, &mVInfo) == -1) {
-         ALOGE("%s: FBIOPUT_VSCREENINFO failed, str: %s", __FUNCTION__,
-                                      strerror(errno));
+    if (ioctl(mFd, FBIOPUT_VSCREENINFO, &mVInfo) == -1) {
+         ALOGE("%s: FBIOPUT_VSCREENINFO failed, str: %s",
+                __FUNCTION__, strerror(errno));
 #endif
-         return false;
+        return false;
     }
     return true;
 }
 
-/*
- * return 0 on success
- * return -errno on ioctl failure as the hwc_eventControl need
- * to return -errno.
- */
-int ExternalDisplay::enableHDMIVsync(int enable)
-{
-    int ret = 0;
-#ifndef NO_HW_VSYNC
-    if(mFd > 0) {
-        int ret = ioctl(mFd, MSMFB_OVERLAY_VSYNC_CTRL, &enable);
-        if (ret<0) {
-            ALOGE("%s: enabling HDMI vsync failed, str: %s", __FUNCTION__,
-                                                            strerror(errno));
-            ret = -errno;
-        }
+void ExternalDisplay::setDpyWfdAttr() {
+    if(mHwcContext) {
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].xres = mVInfo.xres;
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].yres = mVInfo.yres;
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].vsync_period =
+                1000000000l /60;
+        ALOGD_IF(DEBUG,"%s: wfd...connected..!",__FUNCTION__);
     }
-#endif
-    return ret;
+}
+
+void ExternalDisplay::setDpyHdmiAttr() {
+    int width = 0, height = 0, fps = 0;
+    getAttrForMode(width, height, fps);
+    if(mHwcContext) {
+        ALOGD("ExtDisplay setting xres = %d, yres = %d", width, height);
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].xres = width;
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].yres = height;
+        mHwcContext->dpyAttr[HWC_DISPLAY_EXTERNAL].vsync_period =
+            1000000000l / fps;
+    }
+}
+
+void ExternalDisplay::getAttrForMode(int& width, int& height, int& fps) {
+    switch (mCurrentMode) {
+        case m640x480p60_4_3:
+            width = 640;
+            height = 480;
+            fps = 60;
+            break;
+        case m720x480p60_4_3:
+        case m720x480p60_16_9:
+            width = 720;
+            height = 480;
+            fps = 60;
+            break;
+        case m720x576p50_4_3:
+        case m720x576p50_16_9:
+            width = 720;
+            height = 576;
+            fps = 50;
+            break;
+        case m1280x720p50_16_9:
+            width = 1280;
+            height = 720;
+            fps = 50;
+            break;
+        case m1280x720p60_16_9:
+            width = 1280;
+            height = 720;
+            fps = 60;
+            break;
+        case m1920x1080p24_16_9:
+            width = 1920;
+            height = 1080;
+            fps = 24;
+            break;
+        case m1920x1080p25_16_9:
+            width = 1920;
+            height = 1080;
+            fps = 25;
+            break;
+        case m1920x1080p30_16_9:
+            width = 1920;
+            height = 1080;
+            fps = 30;
+            break;
+        case m1920x1080p50_16_9:
+            width = 1920;
+            height = 1080;
+            fps = 50;
+            break;
+        case m1920x1080p60_16_9:
+            width = 1920;
+            height = 1080;
+            fps = 60;
+            break;
+    }
 }
 
 };

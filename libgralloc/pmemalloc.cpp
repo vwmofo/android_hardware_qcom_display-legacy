@@ -32,8 +32,7 @@
 #include <stdlib.h>
 #include <cutils/log.h>
 #include <errno.h>
-#include <linux/fs.h>
-#include "android_pmem.h"
+#include <linux/android_pmem.h>
 #include "gralloc_priv.h"
 #include "pmemalloc.h"
 #include "pmem_bestfit_alloc.h"
@@ -70,14 +69,14 @@ static int connectPmem(int fd, int master_fd) {
     return 0;
 }
 
-static int mapSubRegion(int fd, int offset, size_t size) {
+static int mapSubRegion(int fd, unsigned int offset, size_t size) {
     struct pmem_region sub = { offset, size };
     if (ioctl(fd, PMEM_MAP, &sub))
         return -errno;
     return 0;
 }
 
-static int unmapSubRegion(int fd, int offset, size_t size) {
+static int unmapSubRegion(int fd, unsigned int offset, size_t size) {
     struct pmem_region sub = { offset, size };
     if (ioctl(fd, PMEM_UNMAP, &sub))
         return -errno;

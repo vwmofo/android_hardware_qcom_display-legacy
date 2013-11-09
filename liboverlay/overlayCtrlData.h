@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2012, Code Aurora Forum. All rights reserved.
+* Copyright (c) 2012, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -10,7 +10,7 @@
 *      copyright notice, this list of conditions and the following
 *      disclaimer in the documentation and/or other materials provided
 *      with the distribution.
-*    * Neither the name of Code Aurora Forum, Inc. nor the names of its
+*    * Neither the name of The Linux Foundation nor the names of its
 *      contributors may be used to endorse or promote products derived
 *      from this software without specific prior written permission.
 *
@@ -72,8 +72,6 @@ public:
     int  getPipeId() const;
     /* ctrl fd */
     int  getFd() const;
-    utils::Dim getAspectRatio(const utils::Whf& whf) const;
-    utils::Dim getAspectRatio(const utils::Dim& dim) const;
 
     /* access for screen info */
     utils::ScreenInfo getScreenInfo() const;
@@ -83,12 +81,6 @@ public:
 
     /* dump the state of the object */
     void dump() const;
-
-    /* Perform transformation calculations */
-    void doTransform();
-
-    /* Performs downscale calculations */
-    int doDownscale();
 
 private:
     /* Retrieve screen info from underlying mdp */
@@ -189,14 +181,6 @@ inline utils::ScreenInfo Ctrl::getScreenInfo() const {
 
 inline utils::Dim Ctrl::getCrop() const {
     return mMdp.getSrcRectDim();
-}
-
-inline void Ctrl::doTransform() {
-    return mMdp.doTransform();
-}
-
-inline int Ctrl::doDownscale() {
-    return mMdp.doDownscale();
 }
 
 inline Data::Data() {
