@@ -1,4 +1,4 @@
-ifeq ($(TARGET_QCOM_DISPLAY_VARIANT),legacy)
+ifeq ($(call my-dir),$(call project-path-for,qcom-display))
 display-hals := libgralloc libgenlock libcopybit
 display-hals += libhwcomposer liboverlay libqdutils
 ifneq ($(TARGET_PROVIDES_LIBLIGHT),true)
