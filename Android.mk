@@ -1,4 +1,5 @@
 ifeq ($(call my-dir),$(call project-path-for,qcom-display))
+
 display-hals := libgralloc libgenlock libcopybit
 display-hals += libhwcomposer liboverlay libqdutils
 display-hals += libmemtrack
@@ -6,6 +7,14 @@ ifneq ($(TARGET_PROVIDES_LIBLIGHT),true)
 display-hals += liblight
 endif
 
-include $(call all-named-subdir-makefiles,$(display-hals))
+ifneq (,$(filter $(QCOM_BOARD_PLATFORMS),$(TARGET_BOARD_PLATFORM)))
+    include $(call all-named-subdir-makefiles,$(display-hals))
+else
+ifneq ($(filter msm8660,$(TARGET_BOARD_PLATFORM)),)
+    #This is for mako since it doesn't have the QCOM make functions
+    include $(call all-named-subdir-makefiles,$(display-hals))
+endif
+endif
 
 endif
+
