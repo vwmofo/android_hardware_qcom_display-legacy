@@ -39,10 +39,17 @@ LOCAL_C_INCLUDES       := $(common_includes) $(kernel_includes)
 LOCAL_SHARED_LIBRARIES := $(common_libs) libgenlock libqdutils
 LOCAL_CFLAGS           := $(common_flags) -DLOG_TAG=\"memalloc\"
 LOCAL_ADDITIONAL_DEPENDENCIES := $(common_deps) $(kernel_deps)
-LOCAL_SRC_FILES        := alloc_controller.cpp ionalloc.cpp
-LOCAL_CFLAGS           += -DUSE_ION
+LOCAL_SRC_FILES        := alloc_controller.cpp
+ifeq ($(TARGET_USES_ION),true)
+    LOCAL_SRC_FILES +=  ionalloc.cpp
+    LOCAL_CFLAGS    += -DUSE_ION
 ifeq ($(BOARD_USES_PMEM_ADSP),true)
-    LOCAL_SRC_FILES    += pmemadspalloc.cpp
-    LOCAL_CFLAGS       += -DUSE_PMEM_ADSP
+    LOCAL_SRC_FILES           += pmemadspalloc.cpp
+    LOCAL_CFLAGS              += -DUSE_PMEM_ADSP
+endif
+else
+    LOCAL_SRC_FILES +=  pmemalloc.cpp \
+                        ashmemalloc.cpp \
+                        pmem_bestfit_alloc.cpp
 endif
 include $(BUILD_SHARED_LIBRARY)
